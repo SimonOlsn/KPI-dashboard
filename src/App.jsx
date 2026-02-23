@@ -1,530 +1,280 @@
 import { useState, useEffect } from 'react'
 import {
-  AreaChart, Area, BarChart, Bar, LineChart, Line, ComposedChart,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine
+  AreaChart, Area, LineChart, Line, ComposedChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  ReferenceLine, ReferenceArea
 } from 'recharts'
 
-const COLORS = {
-  blue: '#4f8ff7',
-  green: '#34d399',
-  red: '#f87171',
-  amber: '#fbbf24',
-  purple: '#a78bfa',
-  cyan: '#22d3ee',
-  pink: '#f472b6',
-  orange: '#fb923c',
+const C = {
+  blue: '#4f8ff7', green: '#34d399', red: '#f87171',
+  amber: '#fbbf24', purple: '#a78bfa', cyan: '#22d3ee',
+  muted: '#5a5e73', border: '#2a2d3e', card: '#1e2130',
 }
 
 const fmt = (v, type) => {
   if (v == null || isNaN(v)) return '—'
-  if (type === 'currency') {
-    if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`
-    if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}K`
-    return `$${v.toFixed(0)}`
+  if (typeof v === 'string') return v
+  if (type === '$') {
+    const neg = v < 0 ? '-' : ''
+    const a = Math.abs(v)
+    if (a >= 1e6) return `${neg}$${(a / 1e6).toFixed(1)}M`
+    if (a >= 1e3) return `${neg}$${(a / 1e3).toFixed(0)}K`
+    return `${neg}$${a.toFixed(0)}`
   }
-  if (type === 'percent') return `${(v * 100).toFixed(1)}%`
-  if (type === 'number') return v.toFixed(1)
-  if (type === 'integer') return Math.round(v).toLocaleString()
-  return v.toFixed(2)
+  if (type === '%') return `${(v * 100).toFixed(1)}%`
+  if (type === '#') return v.toFixed(2)
+  return String(v)
 }
 
-const pctChange = (arr) => {
-  if (!arr || arr.length < 2) return 0
-  const last = arr[arr.length - 1]
-  const prev = arr[arr.length - 2]
-  if (prev === 0) return 0
-  return (last - prev) / Math.abs(prev)
+const delta = (now, target) => {
+  if (!target || target === 0) return null
+  return (target - now) / Math.abs(target)
 }
 
-const CustomTooltip = ({ active, payload, label, valueFormat }) => {
+// ── Tooltip ──
+const Tip = ({ active, payload, label, vf }) => {
   if (!active || !payload?.length) return null
   return (
     <div style={{
-      background: '#1e2130', border: '1px solid #2a2d3e', borderRadius: 8,
-      padding: '10px 14px', fontSize: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.4)'
+      background: '#1a1d27', border: `1px solid ${C.border}`, borderRadius: 8,
+      padding: '10px 14px', fontSize: 12, boxShadow: '0 8px 24px rgba(0,0,0,0.5)'
     }}>
-      <div style={{ color: '#8b8fa3', marginBottom: 6 }}>{label}</div>
-      {payload.map((p, i) => (
-        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
-          <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color, display: 'inline-block' }} />
-          <span style={{ color: '#e4e6f0' }}>{p.name}: </span>
-          <span style={{ fontWeight: 600, color: p.color }}>
-            {fmt(p.value, valueFormat || 'currency')}
-          </span>
+      <div style={{ color: C.muted, marginBottom: 6, fontWeight: 600 }}>{label}</div>
+      {payload.filter(p => p.value != null).map((p, i) => (
+        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: p.color || p.stroke, flexShrink: 0 }} />
+          <span style={{ color: '#e4e6f0' }}>{p.name}:</span>
+          <span style={{ fontWeight: 600, color: p.color || p.stroke }}>{fmt(p.value, vf || '$')}</span>
         </div>
       ))}
     </div>
   )
 }
 
-function KpiCard({ label, value, format, change, subtitle, color }) {
-  const changeClass = change > 0.001 ? 'positive' : change < -0.001 ? 'negative' : 'neutral'
-  const arrow = change > 0.001 ? '↑' : change < -0.001 ? '↓' : '→'
+// ── Scoreboard Row ──
+function Score({ label, now, target3, target6, target12, type, color, icon }) {
+  const d3 = delta(now, target3)
+  const d6 = delta(now, target6)
   return (
-    <div className="kpi-card">
-      <div className="kpi-label">{label}</div>
-      <div className="kpi-value" style={{ color: color || 'var(--text-primary)' }}>
-        {fmt(value, format)}
+    <div className="score-row">
+      <div className="score-icon" style={{ background: color + '18', color }}>{icon}</div>
+      <div className="score-label">{label}</div>
+      <div className="score-now" style={{ color }}>{fmt(now, type)}</div>
+      <div className="score-targets">
+        <Target label="3mo" value={target3} type={type} delta={d3} />
+        <Target label="6mo" value={target6} type={type} delta={d6} />
+        <Target label="12mo" value={target12} type={type} />
       </div>
-      {change !== undefined && (
-        <div className={`kpi-change ${changeClass}`}>
-          {arrow} {fmt(Math.abs(change), 'percent')} vs prev month
-        </div>
-      )}
-      {subtitle && <div className="kpi-subtitle">{subtitle}</div>}
     </div>
   )
 }
 
-function ChartCard({ title, subtitle, children, fullWidth, legend }) {
+function Target({ label, value, type, delta: d }) {
   return (
-    <div className={`chart-card${fullWidth ? ' full-width' : ''}`}>
-      <div className="chart-title">{title}</div>
-      {subtitle && <div className="chart-subtitle">{subtitle}</div>}
-      {legend && (
-        <div className="chart-legend">
-          {legend.map((l, i) => (
-            <div key={i} className="legend-item">
-              <span className="legend-dot" style={{ background: l.color }} />
-              {l.label}
-            </div>
-          ))}
+    <div className="target-cell">
+      <div className="target-label">{label} target</div>
+      <div className="target-value">{fmt(value, type)}</div>
+      {d != null && (
+        <div className={`target-delta ${d > 0 ? 'up' : d < 0 ? 'down' : ''}`}>
+          {d > 0 ? '↑' : d < 0 ? '↓' : '→'} {fmt(Math.abs(d), '%')} to go
         </div>
       )}
-      {children}
     </div>
   )
 }
 
+// ── KPI Sparkline Chart ──
+function KpiChart({ title, data, dataKey, color, today, type, targetKey, children }) {
+  return (
+    <div className="kpi-chart">
+      <div className="kpi-chart-title">{title}</div>
+      <ResponsiveContainer width="100%" height={220}>
+        <ComposedChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+          <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} interval={5} />
+          <YAxis tickFormatter={v => fmt(v, type)} tick={{ fontSize: 10, fill: C.muted }} width={58} />
+          <Tooltip content={<Tip vf={type} />} />
+          {/* Shade past as slightly brighter */}
+          <ReferenceArea x1={data[0]?.date} x2={today} fill="#ffffff" fillOpacity={0.03} />
+          {/* Today line */}
+          <ReferenceLine x={today} stroke={C.amber} strokeWidth={2} strokeDasharray="6 3"
+            label={{ value: 'TODAY', fill: C.amber, fontSize: 10, fontWeight: 700, position: 'top' }} />
+          {children || (
+            <Area type="monotone" dataKey={dataKey} name={title} stroke={color}
+              fill={color} fillOpacity={0.1} strokeWidth={2.5}
+              dot={false} activeDot={{ r: 4, fill: color }} />
+          )}
+          {targetKey && (
+            <Line type="monotone" dataKey={targetKey} name="Target" stroke={C.muted}
+              strokeWidth={1.5} strokeDasharray="6 3" dot={false} />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+// ── Main App ──
 export default function App() {
   const [data, setData] = useState(null)
-  const [tab, setTab] = useState('overview')
 
   useEffect(() => {
     fetch('/data.json').then(r => r.json()).then(setData)
   }, [])
 
   if (!data) return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#8b8fa3' }}>
-      Loading dashboard...
-    </div>
+    <div className="loading">Loading Togy Dashboard...</div>
   )
 
-  const { dates, kpis, income_statement: is } = data
-  const last = dates.length - 1
+  const { today, today_idx: ti, dates, milestones: m, series: s } = data
 
-  // Build chart data arrays
-  const chartData = dates.map((d, i) => ({
-    date: d,
-    mrr: kpis.financial.mrr[i],
-    mrrVision: kpis.financial.mrr_vision[i],
-    mrrMain: kpis.financial.mrr_main[i],
-    grossMargin: kpis.financial.gross_margin[i],
-    gmVision: kpis.financial.gross_margin_vision[i],
-    gmMain: kpis.financial.gross_margin_main[i],
-    burnRate: kpis.financial.burn_rate[i],
-    burnVision: kpis.financial.burn_rate_vision[i],
-    burnMain: kpis.financial.burn_rate_main[i],
-    revPerEmp: kpis.financial.revenue_per_employee[i],
-    newLogos: kpis.gtm.new_logos_per_month[i],
-    cumLogos: is.logos_cumulative[i],
-    salesProd: kpis.gtm.sales_productivity[i],
-    unitsDelivered: kpis.delivery.units_delivered_per_month[i],
-    visionUnits: kpis.delivery.vision_units[i],
-    mainUnits: kpis.delivery.main_units[i],
-    utilRate: kpis.delivery.utilization_rate[i],
-    utilVision: kpis.delivery.utilization_vision[i],
-    utilMain: kpis.delivery.utilization_main[i],
-    deployTime: kpis.delivery.order_to_deployment_time[i],
-    collections: is.total_collections[i],
-    cogs: Math.abs(is.cogs[i]),
-    grossCashMargin: is.gross_cash_margin[i],
-    opex: Math.abs(is.operating_costs[i]),
-    netCashFlow: is.net_operating_cash_flow[i],
-    cashEnding: is.cash_ending[i],
-    visionCumUnits: is.vision_units_cumulative[i],
-    mainCumUnits: is.main_units_cumulative[i],
-    visionCustomers: is.vision_customers_cumulative[i],
-    mainCustomers: is.main_customers_cumulative[i],
-  }))
+  // Chart data with actuals (up to today) and plan (after today)
+  const chartData = dates.map((d, i) => {
+    const isPast = i <= ti
+    return {
+      date: d,
+      mrr: s.mrr[i],
+      mrrActual: isPast ? s.mrr[i] : null,
+      mrrPlan: !isPast ? s.mrr[i] : null,
+      gm: s.gross_margin[i],
+      gmActual: isPast ? s.gross_margin[i] : null,
+      gmPlan: !isPast ? s.gross_margin[i] : null,
+      logos: s.new_logos[i],
+      logosActual: isPast ? s.new_logos[i] : null,
+      logosPlan: !isPast ? s.new_logos[i] : null,
+      cumLogos: s.cum_logos[i],
+      burn: s.burn_rate[i],
+      burnActual: isPast ? s.burn_rate[i] : null,
+      burnPlan: !isPast ? s.burn_rate[i] : null,
+      util: s.utilization[i],
+      utilActual: isPast ? s.utilization[i] : null,
+      utilPlan: !isPast ? s.utilization[i] : null,
+      cash: s.cash_ending[i],
+      collections: s.collections[i],
+    }
+  })
+  // Bridge: connect actual to plan at the today boundary
+  if (ti + 1 < dates.length) {
+    chartData[ti].mrrPlan = chartData[ti].mrrActual
+    chartData[ti].gmPlan = chartData[ti].gmActual
+    chartData[ti].logosPlan = chartData[ti].logosActual
+    chartData[ti].burnPlan = chartData[ti].burnActual
+    chartData[ti].utilPlan = chartData[ti].utilActual
+  }
 
-  // Annual ARR
-  const currentMRR = kpis.financial.mrr[last]
-  const currentARR = currentMRR * 12
+  const now = m.current
+  const t3 = m.plus_3m
+  const t6 = m.plus_6m
+  const t12 = m.plus_12m
 
-  // Cash runway calculation
-  const cashEnd = is.cash_ending[last]
-  const avgBurn = kpis.financial.burn_rate.slice(-6).reduce((a, b) => a + b, 0) / 6
-  const cashPositive = cashEnd > 0
-  const runwayMonths = cashPositive ? Infinity : Math.abs(cashEnd / avgBurn)
+  // Breakeven
+  const bkIdx = s.cash_ending.findIndex((v, i) => i > 0 && s.cash_ending[i - 1] < 0 && v >= 0)
+  const breakevenDate = bkIdx >= 0 ? dates[bkIdx] : null
 
-  // Breakeven month
-  const breakevenIdx = is.net_operating_cash_flow.findIndex(v => v > 0)
-  const breakevenDate = breakevenIdx >= 0 ? dates[breakevenIdx] : null
-
-  const tabs = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'financial', label: 'Financial' },
-    { key: 'gtm', label: 'Go-to-Market' },
-    { key: 'delivery', label: 'Delivery & Ops' },
-    { key: 'cashflow', label: 'Cash Flow' },
-  ]
+  // Cash trough
+  const minCash = Math.min(...s.cash_ending)
 
   return (
     <div className="dashboard">
-      <div className="dashboard-header">
-        <h1><span>Togy</span> KPI Dashboard</h1>
-        <div className="header-meta">
-          Forecast: {dates[0]} → {dates[last]} &middot; {dates.length} months &middot; USD
+      {/* ── Header ── */}
+      <header className="header">
+        <div>
+          <h1>Togy <span className="accent">Command Center</span></h1>
+          <p className="header-sub">5 KPIs that matter &middot; Today: <strong>{today}</strong> &middot; Forecast → {dates[dates.length - 1]}</p>
         </div>
-      </div>
-
-      <div className="nav-tabs">
-        {tabs.map(t => (
-          <button key={t.key} className={`nav-tab ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ===== OVERVIEW ===== */}
-      {tab === 'overview' && (
-        <>
-          <div className="section-header">
-            <span className="dot" style={{ background: COLORS.blue }} />
-            Key Metrics Snapshot (Latest: {dates[last]})
+        <div className="header-right">
+          <div className="header-stat">
+            <div className="header-stat-label">Breakeven</div>
+            <div className="header-stat-value" style={{ color: C.green }}>{breakevenDate || '—'}</div>
           </div>
-          <div className="kpi-grid">
-            <KpiCard label="Monthly Recurring Revenue" value={currentMRR} format="currency"
-              change={pctChange(kpis.financial.mrr)} color={COLORS.blue} />
-            <KpiCard label="Annual Run-Rate (ARR)" value={currentARR} format="currency"
-              subtitle="MRR × 12" color={COLORS.cyan} />
-            <KpiCard label="Gross Margin" value={kpis.financial.gross_margin[last]} format="percent"
-              change={pctChange(kpis.financial.gross_margin)} color={COLORS.green} />
-            <KpiCard label="Cumulative Logos" value={is.logos_cumulative[last]} format="number"
-              change={pctChange(is.logos_cumulative)} color={COLORS.amber} />
-            <KpiCard label="Units Delivered/mo" value={kpis.delivery.units_delivered_per_month[last]} format="number"
-              change={pctChange(kpis.delivery.units_delivered_per_month)} color={COLORS.purple} />
-            <KpiCard label="Utilization Rate" value={kpis.delivery.utilization_rate[last]} format="percent"
-              change={pctChange(kpis.delivery.utilization_rate)} />
-            <KpiCard label="Monthly Burn Rate" value={kpis.financial.burn_rate[last]} format="currency"
-              change={pctChange(kpis.financial.burn_rate.map(Math.abs))} color={COLORS.red} />
-            <KpiCard label="Cash Position" value={cashEnd} format="currency"
-              subtitle={cashPositive ? 'Cash positive' : `~${runwayMonths.toFixed(0)} months runway`}
-              color={cashPositive ? COLORS.green : COLORS.red} />
+          <div className="header-stat">
+            <div className="header-stat-label">Cash Trough</div>
+            <div className="header-stat-value" style={{ color: C.red }}>{fmt(minCash, '$')}</div>
           </div>
+        </div>
+      </header>
 
-          <div className="chart-grid">
-            <ChartCard title="MRR Trajectory" subtitle="Monthly Recurring Revenue by product"
-              legend={[{ label: 'Vision', color: COLORS.blue }, { label: 'MAIN', color: COLORS.green }]}>
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="mrrVision" name="Vision" stroke={COLORS.blue} fill={COLORS.blue} fillOpacity={0.15} strokeWidth={2} />
-                  <Area type="monotone" dataKey="mrrMain" name="MAIN" stroke={COLORS.green} fill={COLORS.green} fillOpacity={0.15} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Net Cash Flow" subtitle="Monthly operating cash flow trend">
-              <ResponsiveContainer width="100%" height={260}>
-                <ComposedChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={0} stroke="#5a5e73" strokeDasharray="3 3" />
-                  <Bar dataKey="netCashFlow" name="Net Cash Flow" fill={COLORS.blue}
-                    radius={[3, 3, 0, 0]}
-                    fillOpacity={0.8}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </ChartCard>
+      {/* ── Scoreboard ── */}
+      <section className="scoreboard">
+        <div className="scoreboard-header">
+          <div className="scoreboard-col-label" />
+          <div className="scoreboard-col-label" />
+          <div className="scoreboard-col-now">Now</div>
+          <div className="scoreboard-col-targets">
+            <span>3 month</span>
+            <span>6 month</span>
+            <span>12 month</span>
           </div>
-        </>
-      )}
+        </div>
+        <Score label="MRR" icon="$" color={C.blue} type="$"
+          now={now.mrr} target3={t3.mrr} target6={t6.mrr} target12={t12.mrr} />
+        <Score label="Gross Margin" icon="%" color={C.green} type="%"
+          now={now.gross_margin} target3={t3.gross_margin} target6={t6.gross_margin} target12={t12.gross_margin} />
+        <Score label="New Logos/mo" icon="◆" color={C.amber} type="#"
+          now={now.new_logos} target3={t3.new_logos} target6={t6.new_logos} target12={t12.new_logos} />
+        <Score label="Burn Rate" icon="↓" color={C.red} type="$"
+          now={now.burn_rate} target3={t3.burn_rate} target6={t6.burn_rate} target12={t12.burn_rate} />
+        <Score label="Utilization" icon="◎" color={C.purple} type="%"
+          now={now.utilization} target3={t3.utilization} target6={t6.utilization} target12={t12.utilization} />
+      </section>
 
-      {/* ===== FINANCIAL ===== */}
-      {tab === 'financial' && (
-        <>
-          <div className="section-header">
-            <span className="dot" style={{ background: COLORS.blue }} />
-            Financial KPIs
-          </div>
-          <div className="kpi-grid">
-            <KpiCard label="MRR" value={currentMRR} format="currency" change={pctChange(kpis.financial.mrr)} color={COLORS.blue} />
-            <KpiCard label="MRR - Vision" value={kpis.financial.mrr_vision[last]} format="currency" change={pctChange(kpis.financial.mrr_vision)} color={COLORS.cyan} />
-            <KpiCard label="MRR - MAIN" value={kpis.financial.mrr_main[last]} format="currency" change={pctChange(kpis.financial.mrr_main)} color={COLORS.green} />
-            <KpiCard label="Gross Margin" value={kpis.financial.gross_margin[last]} format="percent" change={pctChange(kpis.financial.gross_margin)} color={COLORS.green} />
-            <KpiCard label="GM - Vision" value={kpis.financial.gross_margin_vision[last]} format="percent" color={COLORS.cyan} />
-            <KpiCard label="GM - MAIN" value={kpis.financial.gross_margin_main[last]} format="percent" color={COLORS.purple} />
-            <KpiCard label="Revenue / Employee" value={kpis.financial.revenue_per_employee[last]} format="currency"
-              change={pctChange(kpis.financial.revenue_per_employee)} color={COLORS.amber} />
-            <KpiCard label="Breakeven Month" value={breakevenDate || 'Not yet'} format={null}
-              subtitle="First month with positive net cash flow" color={COLORS.green} />
-          </div>
+      {/* ── Charts ── */}
+      <section className="charts">
+        <KpiChart title="Monthly Recurring Revenue" data={chartData} dataKey="mrr" color={C.blue} today={today} type="$">
+          <Area type="monotone" dataKey="mrrActual" name="Actual" stroke={C.blue}
+            fill={C.blue} fillOpacity={0.15} strokeWidth={2.5} dot={false} connectNulls={false} />
+          <Area type="monotone" dataKey="mrrPlan" name="Plan" stroke={C.blue}
+            fill={C.blue} fillOpacity={0.05} strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls={false} />
+        </KpiChart>
 
-          <div className="chart-grid">
-            <ChartCard title="MRR Growth" subtitle="Total and by product line"
-              legend={[{ label: 'Total MRR', color: COLORS.blue }, { label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.green }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="mrr" name="Total MRR" stroke={COLORS.blue} fill={COLORS.blue} fillOpacity={0.1} strokeWidth={2.5} />
-                  <Area type="monotone" dataKey="mrrVision" name="Vision" stroke={COLORS.cyan} fill="none" strokeWidth={1.5} strokeDasharray="4 4" />
-                  <Area type="monotone" dataKey="mrrMain" name="MAIN" stroke={COLORS.green} fill="none" strokeWidth={1.5} strokeDasharray="4 4" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
+        <KpiChart title="Gross Margin %" data={chartData.filter(d => d.gm > -1)} dataKey="gm" color={C.green} today={today} type="%">
+          <ReferenceLine y={0} stroke={C.muted} strokeDasharray="3 3" />
+          <Area type="monotone" dataKey="gmActual" name="Actual" stroke={C.green}
+            fill={C.green} fillOpacity={0.15} strokeWidth={2.5} dot={false} connectNulls={false} />
+          <Area type="monotone" dataKey="gmPlan" name="Plan" stroke={C.green}
+            fill={C.green} fillOpacity={0.05} strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls={false} />
+        </KpiChart>
 
-            <ChartCard title="Gross Margin Trajectory" subtitle="Overall and by product"
-              legend={[{ label: 'Overall', color: COLORS.green }, { label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.purple }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData.filter(d => d.grossMargin > -1)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 11 }} domain={[-0.5, 1]} />
-                  <Tooltip content={<CustomTooltip valueFormat="percent" />} />
-                  <ReferenceLine y={0} stroke="#5a5e73" />
-                  <Line type="monotone" dataKey="grossMargin" name="Overall" stroke={COLORS.green} strokeWidth={2.5} dot={false} />
-                  <Line type="monotone" dataKey="gmVision" name="Vision" stroke={COLORS.cyan} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey="gmMain" name="MAIN" stroke={COLORS.purple} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
+        <KpiChart title="New Logos per Month" data={chartData} dataKey="logos" color={C.amber} today={today} type="#">
+          <Bar dataKey="logosActual" name="Actual" fill={C.amber} fillOpacity={0.9} radius={[3, 3, 0, 0]} />
+          <Bar dataKey="logosPlan" name="Plan" fill={C.amber} fillOpacity={0.25} radius={[3, 3, 0, 0]} />
+        </KpiChart>
 
-            <ChartCard title="Revenue per Employee" subtitle="Monthly revenue efficiency metric"
-              legend={[{ label: 'Overall', color: COLORS.amber }, { label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.green }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData.slice(2)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Line type="monotone" dataKey="revPerEmp" name="Overall" stroke={COLORS.amber} strokeWidth={2.5} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
+        <KpiChart title="Burn Rate (monthly)" data={chartData} dataKey="burn" color={C.red} today={today} type="$">
+          <Area type="monotone" dataKey="burnActual" name="Actual" stroke={C.red}
+            fill={C.red} fillOpacity={0.15} strokeWidth={2.5} dot={false} connectNulls={false} />
+          <Area type="monotone" dataKey="burnPlan" name="Plan" stroke={C.red}
+            fill={C.red} fillOpacity={0.05} strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls={false} />
+        </KpiChart>
 
-            <ChartCard title="Burn Rate" subtitle="Monthly cash burn by segment"
-              legend={[{ label: 'Total', color: COLORS.red }, { label: 'Vision', color: COLORS.orange }, { label: 'MAIN', color: COLORS.pink }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Line type="monotone" dataKey="burnRate" name="Total" stroke={COLORS.red} strokeWidth={2.5} dot={false} />
-                  <Line type="monotone" dataKey="burnVision" name="Vision" stroke={COLORS.orange} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey="burnMain" name="MAIN" stroke={COLORS.pink} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
-        </>
-      )}
+        <KpiChart title="Team Utilization" data={chartData} dataKey="util" color={C.purple} today={today} type="%">
+          <ReferenceLine y={0.9} stroke={C.red} strokeDasharray="6 3"
+            label={{ value: '90% capacity', fill: C.red, fontSize: 9, position: 'right' }} />
+          <Area type="monotone" dataKey="utilActual" name="Actual" stroke={C.purple}
+            fill={C.purple} fillOpacity={0.15} strokeWidth={2.5} dot={false} connectNulls={false} />
+          <Area type="monotone" dataKey="utilPlan" name="Plan" stroke={C.purple}
+            fill={C.purple} fillOpacity={0.05} strokeWidth={2} strokeDasharray="6 3" dot={false} connectNulls={false} />
+        </KpiChart>
 
-      {/* ===== GO-TO-MARKET ===== */}
-      {tab === 'gtm' && (
-        <>
-          <div className="section-header">
-            <span className="dot" style={{ background: COLORS.amber }} />
-            Go-to-Market KPIs
-          </div>
-          <div className="kpi-grid">
-            <KpiCard label="New Logos / Month" value={kpis.gtm.new_logos_per_month[last]} format="number"
-              change={pctChange(kpis.gtm.new_logos_per_month)} color={COLORS.amber} />
-            <KpiCard label="Cumulative Logos" value={is.logos_cumulative[last]} format="number"
-              color={COLORS.blue} />
-            <KpiCard label="Sales Productivity" value={kpis.gtm.sales_productivity[last]} format="number"
-              subtitle="Logos per ramped AE per month" color={COLORS.green} />
-            <KpiCard label="Vision Customers" value={is.vision_customers_cumulative[last]} format="number"
-              color={COLORS.cyan} />
-            <KpiCard label="MAIN Customers" value={is.main_customers_cumulative[last]} format="number"
-              color={COLORS.purple} />
-          </div>
-
-          <div className="chart-grid">
-            <ChartCard title="Customer Acquisition" subtitle="Cumulative logos over time">
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip valueFormat="number" />} />
-                  <Area type="monotone" dataKey="cumLogos" name="Cumulative Logos" stroke={COLORS.amber} fill={COLORS.amber} fillOpacity={0.15} strokeWidth={2.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Customer Base by Product" subtitle="Vision vs MAIN cumulative customers"
-              legend={[{ label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.purple }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip valueFormat="number" />} />
-                  <Line type="monotone" dataKey="visionCustomers" name="Vision Customers" stroke={COLORS.cyan} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="mainCustomers" name="MAIN Customers" stroke={COLORS.purple} strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Installed Base (Units)" subtitle="Cumulative units/subscriptions deployed"
-              legend={[{ label: 'Vision Units', color: COLORS.blue }, { label: 'MAIN Subscriptions', color: COLORS.green }]} fullWidth>
-              <ResponsiveContainer width="100%" height={280}>
-                <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip valueFormat="number" />} />
-                  <Area type="monotone" dataKey="visionCumUnits" name="Vision Units" stroke={COLORS.blue} fill={COLORS.blue} fillOpacity={0.12} strokeWidth={2} />
-                  <Area type="monotone" dataKey="mainCumUnits" name="MAIN Subscriptions" stroke={COLORS.green} fill={COLORS.green} fillOpacity={0.12} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
-        </>
-      )}
-
-      {/* ===== DELIVERY & OPS ===== */}
-      {tab === 'delivery' && (
-        <>
-          <div className="section-header">
-            <span className="dot" style={{ background: COLORS.purple }} />
-            Delivery & Operations KPIs
-          </div>
-          <div className="kpi-grid">
-            <KpiCard label="Units Delivered / Month" value={kpis.delivery.units_delivered_per_month[last]} format="number"
-              change={pctChange(kpis.delivery.units_delivered_per_month)} color={COLORS.blue} />
-            <KpiCard label="Vision Delivered" value={kpis.delivery.vision_units[last]} format="number"
-              color={COLORS.cyan} />
-            <KpiCard label="MAIN Delivered" value={kpis.delivery.main_units[last]} format="number"
-              color={COLORS.green} />
-            <KpiCard label="Order-to-Deploy (wks)" value={kpis.delivery.order_to_deployment_time[last]} format="number"
-              subtitle="Weighted avg weeks" color={COLORS.amber} />
-            <KpiCard label="Utilization Rate" value={kpis.delivery.utilization_rate[last]} format="percent"
-              change={pctChange(kpis.delivery.utilization_rate)} color={COLORS.purple} />
-            <KpiCard label="Vision Utilization" value={kpis.delivery.utilization_vision[last]} format="percent"
-              color={COLORS.cyan} />
-            <KpiCard label="MAIN Utilization" value={kpis.delivery.utilization_main[last]} format="percent"
-              color={COLORS.green} />
-          </div>
-
-          <div className="chart-grid">
-            <ChartCard title="Monthly Delivery Volume" subtitle="Units delivered per month by product"
-              legend={[{ label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.green }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip valueFormat="number" />} />
-                  <Bar dataKey="visionUnits" name="Vision" fill={COLORS.cyan} radius={[3, 3, 0, 0]} stackId="a" />
-                  <Bar dataKey="mainUnits" name="MAIN" fill={COLORS.green} radius={[3, 3, 0, 0]} stackId="a" />
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Team Utilization" subtitle="Capacity usage across teams"
-              legend={[{ label: 'Overall', color: COLORS.purple }, { label: 'Vision', color: COLORS.cyan }, { label: 'MAIN', color: COLORS.green }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => `${(v * 100).toFixed(0)}%`} tick={{ fontSize: 11 }} domain={[0, 1]} />
-                  <Tooltip content={<CustomTooltip valueFormat="percent" />} />
-                  <ReferenceLine y={0.9} stroke={COLORS.red} strokeDasharray="6 3" label={{ value: '90% target', fill: COLORS.red, fontSize: 10 }} />
-                  <Line type="monotone" dataKey="utilRate" name="Overall" stroke={COLORS.purple} strokeWidth={2.5} dot={false} />
-                  <Line type="monotone" dataKey="utilVision" name="Vision" stroke={COLORS.cyan} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey="utilMain" name="MAIN" stroke={COLORS.green} strokeWidth={1.5} dot={false} strokeDasharray="4 4" />
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
-        </>
-      )}
-
-      {/* ===== CASH FLOW ===== */}
-      {tab === 'cashflow' && (
-        <>
-          <div className="section-header">
-            <span className="dot" style={{ background: COLORS.green }} />
-            Cash Flow & Runway
-          </div>
-          <div className="kpi-grid">
-            <KpiCard label="Cash Position" value={cashEnd} format="currency"
-              color={cashPositive ? COLORS.green : COLORS.red} />
-            <KpiCard label="Monthly Burn" value={kpis.financial.burn_rate[last]} format="currency"
-              change={pctChange(kpis.financial.burn_rate.map(Math.abs))} color={COLORS.red} />
-            <KpiCard label="Total Collections" value={is.total_collections[last]} format="currency"
-              change={pctChange(is.total_collections)} color={COLORS.blue} />
-            <KpiCard label="COGS" value={Math.abs(is.cogs[last])} format="currency"
-              color={COLORS.orange} />
-            <KpiCard label="OPEX" value={Math.abs(is.operating_costs[last])} format="currency"
-              color={COLORS.pink} />
-            <KpiCard label="Net Cash Flow" value={is.net_operating_cash_flow[last]} format="currency"
-              change={pctChange(is.net_operating_cash_flow)} color={COLORS.green} />
-            <KpiCard label="Cash Need (Max)" value={Math.min(...is.cash_ending)} format="currency"
-              subtitle="Lowest cash point in forecast" color={COLORS.red} />
-            <KpiCard label="Breakeven" value={breakevenDate || 'Not yet'} format={null}
-              subtitle="First positive net cash flow month" color={COLORS.green} />
-          </div>
-
-          <div className="chart-grid">
-            <ChartCard title="Cash Position Over Time" subtitle="Cumulative cash balance" fullWidth>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={0} stroke="#5a5e73" strokeWidth={2} />
-                  <Area type="monotone" dataKey="cashEnding" name="Cash Balance" stroke={COLORS.green}
-                    fill={COLORS.green} fillOpacity={0.12} strokeWidth={2.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Revenue vs Costs" subtitle="Collections, COGS, and OPEX breakdown"
-              legend={[{ label: 'Collections', color: COLORS.blue }, { label: 'COGS', color: COLORS.orange }, { label: 'OPEX', color: COLORS.pink }]}>
-              <ResponsiveContainer width="100%" height={300}>
-                <ComposedChart data={chartData.slice(2)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <Area type="monotone" dataKey="collections" name="Collections" stroke={COLORS.blue} fill={COLORS.blue} fillOpacity={0.1} strokeWidth={2} />
-                  <Line type="monotone" dataKey="cogs" name="COGS" stroke={COLORS.orange} strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="opex" name="OPEX" stroke={COLORS.pink} strokeWidth={2} dot={false} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </ChartCard>
-
-            <ChartCard title="Gross Cash Margin" subtitle="Revenue minus cost of goods sold">
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={chartData.slice(2)}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} interval={5} />
-                  <YAxis tickFormatter={v => fmt(v, 'currency')} tick={{ fontSize: 11 }} />
-                  <Tooltip content={<CustomTooltip />} />
-                  <ReferenceLine y={0} stroke="#5a5e73" />
-                  <Area type="monotone" dataKey="grossCashMargin" name="Gross Margin ($)" stroke={COLORS.green}
-                    fill={COLORS.green} fillOpacity={0.12} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
-        </>
-      )}
+        {/* Cash runway - full width */}
+        <div className="kpi-chart full">
+          <div className="kpi-chart-title">Cash Position & Runway</div>
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: C.muted }} interval={5} />
+              <YAxis tickFormatter={v => fmt(v, '$')} tick={{ fontSize: 10, fill: C.muted }} width={58} />
+              <Tooltip content={<Tip />} />
+              <ReferenceArea x1={chartData[0]?.date} x2={today} fill="#ffffff" fillOpacity={0.03} />
+              <ReferenceLine x={today} stroke={C.amber} strokeWidth={2} strokeDasharray="6 3"
+                label={{ value: 'TODAY', fill: C.amber, fontSize: 10, fontWeight: 700, position: 'top' }} />
+              <ReferenceLine y={0} stroke={C.muted} strokeWidth={1.5} />
+              <Area type="monotone" dataKey="cash" name="Cash Balance" stroke={C.cyan}
+                fill={C.cyan} fillOpacity={0.1} strokeWidth={2.5} dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
     </div>
   )
 }
